@@ -6,14 +6,28 @@
 %array_class(int, intArray);
 %array_class(double, doubleArray);
 
-/* epanet simple python wrapper */
-%module (package="epanet") toolkit
-%{
-#include <epanet2_2.h>
-%}
-
 /* strip the pseudo-scope from function declarations and enums*/
 %rename("%(strip:[EN_])s") "";
+
+/* Fix the typemap for passing EN_Project* to functions like open */
+%typemap(in) EN_Project** ph {
+    /* Handle this as an output parameter by setting to NULL */
+    $1 = (EN_Project**)malloc(sizeof(EN_Project*));
+    *$1 = NULL;
+}
+
+/* Special handling for open functions to properly handle errors */
+%typemap(argout) EN_Project** ph {
+  /* Only append the pointer if it's valid */
+  if (*$1 != NULL) {
+    $result = SWIG_Python_AppendOutput($result, SWIG_NewPointerObj(*$1, SWIGTYPE_p_Project, SWIG_POINTER_NEW));
+    /* Don't free *$1 as it's now owned by Python */
+  } else {
+    PyErr_SetString(PyExc_RuntimeError, "Failed to open EPANET project");
+    SWIG_fail;
+  }
+  free($1);
+}
 
 %typemap(in,numinputs=0) EN_Project* (EN_Project temp) {
     $1 = &temp;
@@ -28,6 +42,25 @@
     $result = Py_None;
     Py_INCREF($result);
 }
+
+/* Special handling for project creation/opening functions */
+%typemap(out) int EN_createproject, int EN_open, int EN_openH, int EN_openQ "";
+
+%typemap(argout) EN_Project** EN_createproject, EN_Project** EN_open, EN_Project** EN_openH, EN_Project** EN_openQ {
+  if (*$1 == NULL) {
+    PyErr_SetString(PyExc_RuntimeError, "Failed to create/open EPANET project");
+    SWIG_fail;
+  }
+  $result = SWIG_NewPointerObj(*$1, SWIGTYPE_p_Project, SWIG_POINTER_NEW);
+  /* Don't free *$1 as it's now owned by Python */
+  free($1);
+}
+
+/* epanet simple python wrapper */
+%module (package="epanet") toolkit
+%{
+#include <epanet2_2.h>
+%}
 
 %apply int *OUTPUT {
     int *out_count,
@@ -113,7 +146,10 @@ ignore Project;
 %exception
 {
     $action
-    if ( result > 10) {
+    if (result == NULL || result == 0) {
+      // No error, continue
+    }
+    else if (result > 10) {
         char errmsg[EN_MAXMSG];
         EN_geterror(result, errmsg, EN_MAXMSG);
         PyErr_SetString(PyExc_Exception, errmsg);
